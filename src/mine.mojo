@@ -1,13 +1,11 @@
 """MINE characteristic-matrix kernel over caller-owned buffers."""
 
-from std.algorithm import parallelize
 from std.math import abs, log
 from std.sys.info import simd_width_of as simdwidthof
 
 comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
 comptime W = simdwidthof[DType.float64]()
-comptime PARALLEL_ORIENTATION_WORK = 500_000
 
 
 def zero_f64(values: FPtr, n: Int):
@@ -385,11 +383,8 @@ def compute_matrix(
                 cum2, info2, hp2, pstride, xstride,
             )
 
-    if n * rows * cols >= PARALLEL_ORIENTATION_WORK:
-        parallelize(run_orientation, 2, 2)
-    else:
-        run_orientation(0)
-        run_orientation(1)
+    run_orientation(0)
+    run_orientation(1)
 
     for row in range(rows):
         var row_cols = Int(widths[row])
