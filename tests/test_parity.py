@@ -112,6 +112,15 @@ def test_pstats_parity_and_condensed_order():
     np.testing.assert_allclose(actual_tic, expected_tic, rtol=0, atol=5e-8)
 
 
+def test_pstats_parallel_threshold_parity():
+    rng = np.random.RandomState(31)
+    data = rng.uniform(size=(6, 270))
+    actual = mojo_minepy.pstats(data, alpha=0.6, c=8, est="mic_e")
+    expected = minepy.pstats(data, alpha=0.6, c=8, est="mic_e")
+    np.testing.assert_allclose(actual[0], expected[0], rtol=0, atol=5e-8)
+    np.testing.assert_allclose(actual[1], expected[1], rtol=0, atol=5e-8)
+
+
 def test_cstats_parity():
     rng = np.random.RandomState(12)
     x = rng.uniform(size=(3, 110))

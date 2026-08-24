@@ -1,6 +1,6 @@
 """MINE characteristic-matrix kernel over caller-owned buffers."""
 
-from std.math import abs, log
+from std.math import abs
 from std.sys.info import simd_width_of as simdwidthof
 
 comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
@@ -99,6 +99,7 @@ def clumps(dx: FPtr, qmap: IPtr, pmap: IPtr, n: Int, limit: Int) -> Int:
 
 def hq(cum: IPtr, integer_log: FPtr, q: Int, p: Int, stride: Int, n: Int) -> Float64:
     var total = Float64(n)
+    var inverse_total = 1.0 / total
     var total_log = integer_log[n]
     var accumulated = SIMD[DType.float64, W](0.0)
     var zeros = SIMD[DType.float64, W](0.0)
@@ -108,14 +109,14 @@ def hq(cum: IPtr, integer_log: FPtr, q: Int, p: Int, stride: Int, n: Int) -> Flo
         var values_f64 = values.cast[DType.float64]()
         var logs = integer_log.gather(values.cast[DType.int]())
         accumulated += values.ne(0).select(
-            (values_f64 / total) * (logs - total_log), zeros
+            (values_f64 * inverse_total) * (logs - total_log), zeros
         )
         row += W
     var result = -accumulated.reduce_add()[0]
     while row < q:
         var value = cum[row * stride + p - 1]
         if value != 0:
-            var prob = Float64(value) / total
+            var prob = Float64(value) * inverse_total
             result -= prob * (integer_log[Int(value)] - total_log)
         row += 1
     return result
@@ -125,15 +126,16 @@ def hp3(c: IPtr, integer_log: FPtr, s: Int, t: Int) -> Float64:
     if s == t:
         return 0.0
     var total = Float64(c[t - 1])
+    var inverse_total = 1.0 / total
     var total_log = integer_log[Int(c[t - 1])]
     var result = 0.0
     var first = c[s - 1]
     if first != 0:
-        var prob = Float64(first) / total
+        var prob = Float64(first) * inverse_total
         result -= prob * (integer_log[Int(first)] - total_log)
     var second = c[t - 1] - first
     if second != 0:
-        var prob = Float64(second) / total
+        var prob = Float64(second) * inverse_total
         result -= prob * (integer_log[Int(second)] - total_log)
     return result
 
@@ -148,6 +150,7 @@ def hp3q(
     t: Int,
 ) -> Float64:
     var total = Float64(c[t - 1])
+    var inverse_total = 1.0 / total
     var total_log = integer_log[Int(c[t - 1])]
     var accumulated = SIMD[DType.float64, W](0.0)
     var zeros = SIMD[DType.float64, W](0.0)
@@ -157,7 +160,7 @@ def hp3q(
         var first_f64 = first.cast[DType.float64]()
         var first_logs = integer_log.gather(first.cast[DType.int]())
         accumulated += first.ne(0).select(
-            (first_f64 / total) * (first_logs - total_log), zeros
+            (first_f64 * inverse_total) * (first_logs - total_log), zeros
         )
         var second = (
             cum + row * stride + t - 1
@@ -165,18 +168,18 @@ def hp3q(
         var second_f64 = second.cast[DType.float64]()
         var second_logs = integer_log.gather(second.cast[DType.int]())
         accumulated += second.ne(0).select(
-            (second_f64 / total) * (second_logs - total_log), zeros
+            (second_f64 * inverse_total) * (second_logs - total_log), zeros
         )
         row += W
     var result = -accumulated.reduce_add()[0]
     while row < q:
         var first = cum[row * stride + s - 1]
         if first != 0:
-            var prob = Float64(first) / total
+            var prob = Float64(first) * inverse_total
             result -= prob * (integer_log[Int(first)] - total_log)
         var second = cum[row * stride + t - 1] - first
         if second != 0:
-            var prob = Float64(second) / total
+            var prob = Float64(second) * inverse_total
             result -= prob * (integer_log[Int(second)] - total_log)
         row += 1
     return result
@@ -194,6 +197,7 @@ def hp2q(
     if s == t:
         return 0.0
     var total = Float64(c[t - 1] - c[s - 1])
+    var inverse_total = 1.0 / total
     var total_log = integer_log[Int(c[t - 1] - c[s - 1])]
     var accumulated = SIMD[DType.float64, W](0.0)
     var zeros = SIMD[DType.float64, W](0.0)
@@ -207,14 +211,14 @@ def hp2q(
         var values_f64 = values.cast[DType.float64]()
         var value_logs = integer_log.gather(values.cast[DType.int]())
         accumulated += values.ne(0).select(
-            (values_f64 / total) * (value_logs - total_log), zeros
+            (values_f64 * inverse_total) * (value_logs - total_log), zeros
         )
         row += W
     var result = -accumulated.reduce_add()[0]
     while row < q:
         var value = cum[row * stride + t - 1] - cum[row * stride + s - 1]
         if value != 0:
-            var prob = Float64(value) / total
+            var prob = Float64(value) * inverse_total
             result -= prob * (integer_log[Int(value)] - total_log)
         row += 1
     return result
@@ -275,12 +279,13 @@ def optimize(
     for cells in range(3, grid_x + 1):
         for t in range(cells, p + 1):
             var ct = Float64(c[t - 1])
+            var inverse_ct = 1.0 / ct
             var best = -1.7976931348623157e308
             for s in range(cells - 1, t + 1):
                 var cs = Float64(c[s - 1])
                 var value = (
-                    (cs / ct) * (info[s * xstride + cells - 1] - entropy_q)
-                    - ((ct - cs) / ct) * hp[s * (pstride + 1) + t]
+                    (cs * inverse_ct) * (info[s * xstride + cells - 1] - entropy_q)
+                    - ((ct - cs) * inverse_ct) * hp[s * (pstride + 1) + t]
                 )
                 if value > best:
                     info[t * xstride + cells] = entropy_q + value
@@ -289,7 +294,7 @@ def optimize(
     for cells in range(p + 1, grid_x + 1):
         info[p * xstride + cells] = info[p * xstride + p]
     for cells in range(2, grid_x + 1):
-        var denom = min(log(Float64(cells)), log(Float64(q)))
+        var denom = min(integer_log[cells], integer_log[q])
         score[cells - 2] = info[p * xstride + cells] / denom
 
 

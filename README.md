@@ -80,16 +80,19 @@ best of three warmed runs in one process.
 
 | case | mojo-minepy | minepy 1.2.6 | result |
 | --- | ---: | ---: | ---: |
-| MIC approx, n=1,000 | 41.90 ms | 86.89 ms | 2.07x faster |
-| MIC approx, n=2,000 | 158.69 ms | 480.38 ms | 3.03x faster |
-| MIC_e, n=2,000 | 56.74 ms | 166.43 ms | 2.93x faster |
-| MIC approx, n=2,000, alpha=0.7 | 247.29 ms | 545.89 ms | 2.21x faster |
-| pstats, 6 x 300, MIC_e | 71.49 ms | 320.07 ms | 4.48x faster |
+| MIC approx, n=1,000 | 41.28 ms | 86.19 ms | 2.09x faster |
+| MIC approx, n=2,000 | 132.60 ms | 266.16 ms | 2.01x faster |
+| MIC_e, n=2,000 | 63.67 ms | 168.52 ms | 2.65x faster |
+| MIC approx, n=2,000, alpha=0.7 | 305.45 ms | 519.69 ms | 1.70x faster |
+| pstats, 6 x 300, MIC_e | 23.62 ms | 194.42 ms | 8.23x faster |
 
 The benchmark script checks numerical parity before timing and prints a
 Markdown table; no stored numbers are used by the script.
 
-No GPU path is included.
+No GPU path is included. The hot work is irregular histogram construction,
+strided/gather entropy scans, and a dependency-heavy dynamic program; it does
+not offer the roughly greater-than-2-flops-per-byte arithmetic intensity needed
+to repay device transfers and launch overhead.
 
 ## How it works
 
@@ -102,13 +105,15 @@ Python objects cross it.
 The Mojo kernel performs minepy's equipartitioning, clump/superclump
 construction, cumulative histograms, entropy calculation, and dynamic program
 for the optimal axis partition. Entropy scans use SIMD with scalar remainder
-loops and gather cached logarithms of integer counts. Above a work threshold,
-the two independent axis orientations run concurrently with separate scratch
-buffers. The Python layer presents the rectangular backing storage as minepy's
-jagged list of arrays and derives MIC, MAS, MEV, MCN, GMIC, and TIC from it.
+loops, hoisted reciprocals, and gathered cached logarithms of integer counts.
+Large `pstats` and `cstats` workloads evaluate independent pairs in a bounded
+thread pool; smaller jobs stay serial. The Python layer presents the rectangular
+backing storage as minepy's jagged list of arrays and derives MIC, MAS, MEV,
+MCN, GMIC, and TIC from it.
 
 All allocations are caller-owned NumPy arrays and same-geometry calls reuse
-their workspace. Python keeps every contiguous, correctly typed buffer alive
+their workspace, including sorted-value and grid-width buffers. Python keeps
+every contiguous, correctly typed buffer alive
 for the duration of the synchronous call. The ABI validates non-null addresses
 and geometry before constructing pointers and returns a checked status code.
 The Mojo library neither retains pointers nor allocates across the FFI

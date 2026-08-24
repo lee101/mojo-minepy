@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 from ._lib import addr, lib
 
 _ESTIMATORS = {"mic_approx": 0, "mic_e": 1}
+_PARALLEL_PAIR_WORK = 4_000
+_PAIR_WORKERS = 4
 
 
 def _parameters(alpha: float, c: float, est: str) -> tuple[float, float, int]:
@@ -51,16 +55,10 @@ class MINE:
 
         bound = max(n**self.alpha, 4.0) if self.alpha <= 1.0 else min(self.alpha, n)
         rows = max(math.floor(bound / 2.0), 2) - 1
-        widths = np.array(
-            [math.floor(bound / (i + 2.0)) - 1 for i in range(rows)],
-            dtype=np.int64,
-        )
-        cols = int(widths[0])
+        cols = rows
 
         ix = np.ascontiguousarray(np.argsort(xa, kind="quicksort"), dtype=np.int64)
         iy = np.ascontiguousarray(np.argsort(ya, kind="quicksort"), dtype=np.int64)
-        xx = np.ascontiguousarray(xa[ix])
-        yy = np.ascontiguousarray(ya[iy])
 
         requested_limit = self.c * (cols + 1)
         if requested_limit > np.iinfo(np.int64).max:
@@ -72,6 +70,10 @@ class MINE:
 
         geometry = (n, rows, cols, pstride, xstride, qstride)
         if self._workspace is None or self._workspace[0] != geometry:
+            widths = np.array(
+                [math.floor(bound / (i + 2.0)) - 1 for i in range(rows)],
+                dtype=np.int64,
+            )
             integer_log = np.empty(n + 1, dtype=np.float64)
             integer_log[0] = 0.0
             np.log(np.arange(1, n + 1, dtype=np.float64), out=integer_log[1:])
@@ -80,6 +82,9 @@ class MINE:
                 (
                     np.empty((rows, cols), dtype=np.float64),
                     np.empty((rows, cols), dtype=np.float64),
+                    widths,
+                    np.empty(n, dtype=np.float64),
+                    np.empty(n, dtype=np.float64),
                     np.empty(n, dtype=np.int64),
                     np.empty(n, dtype=np.int64),
                     np.empty(n, dtype=np.int64),
@@ -100,6 +105,9 @@ class MINE:
         (
             matrix,
             temporary,
+            widths,
+            xx,
+            yy,
             qtmp,
             qmap,
             pmap,
@@ -116,6 +124,8 @@ class MINE:
             information2,
             interval_entropy2,
         ) = self._workspace[1]
+        np.take(xa, ix, out=xx)
+        np.take(ya, iy, out=yy)
 
         status = lib().mine_compute_matrix(
             addr(xx),
@@ -242,14 +252,33 @@ def pstats(X, alpha=0.6, c=15, est="mic_approx"):
     count = data.shape[0] * (data.shape[0] - 1) // 2
     mic = np.empty(count, dtype=np.float64)
     tic = np.empty(count, dtype=np.float64)
-    mine = MINE(alpha=alpha, c=c, est=est)
-    k = 0
-    for i in range(data.shape[0] - 1):
-        for j in range(i + 1, data.shape[0]):
+    pairs = [
+        (i, j)
+        for i in range(data.shape[0] - 1)
+        for j in range(i + 1, data.shape[0])
+    ]
+    if count * data.shape[1] >= _PARALLEL_PAIR_WORK:
+        lib()
+        state = threading.local()
+
+        def score(pair):
+            mine = getattr(state, "mine", None)
+            if mine is None:
+                mine = MINE(alpha=alpha, c=c, est=est)
+                state.mine = mine
+            mine.compute_score(data[pair[0]], data[pair[1]])
+            return mine.mic(), mine.tic(norm=True)
+
+        with ThreadPoolExecutor(max_workers=min(_PAIR_WORKERS, count)) as executor:
+            for k, (mic_value, tic_value) in enumerate(executor.map(score, pairs)):
+                mic[k] = mic_value
+                tic[k] = tic_value
+    else:
+        mine = MINE(alpha=alpha, c=c, est=est)
+        for k, (i, j) in enumerate(pairs):
             mine.compute_score(data[i], data[j])
             mic[k] = mine.mic()
             tic[k] = mine.tic(norm=True)
-            k += 1
     return mic, tic
 
 
@@ -262,9 +291,26 @@ def cstats(X, Y, alpha=0.6, c=15, est="mic_approx"):
         raise ValueError("X, Y: shape mismatch")
     mic = np.empty((xdata.shape[0], ydata.shape[0]), dtype=np.float64)
     tic = np.empty_like(mic)
-    mine = MINE(alpha=alpha, c=c, est=est)
-    for i in range(xdata.shape[0]):
-        for j in range(ydata.shape[0]):
+    pairs = [(i, j) for i in range(xdata.shape[0]) for j in range(ydata.shape[0])]
+    if len(pairs) * xdata.shape[1] >= _PARALLEL_PAIR_WORK:
+        lib()
+        state = threading.local()
+
+        def score(pair):
+            mine = getattr(state, "mine", None)
+            if mine is None:
+                mine = MINE(alpha=alpha, c=c, est=est)
+                state.mine = mine
+            mine.compute_score(xdata[pair[0]], ydata[pair[1]])
+            return pair, mine.mic(), mine.tic(norm=True)
+
+        with ThreadPoolExecutor(max_workers=min(_PAIR_WORKERS, len(pairs))) as executor:
+            for (i, j), mic_value, tic_value in executor.map(score, pairs):
+                mic[i, j] = mic_value
+                tic[i, j] = tic_value
+    else:
+        mine = MINE(alpha=alpha, c=c, est=est)
+        for i, j in pairs:
             mine.compute_score(xdata[i], ydata[j])
             mic[i, j] = mine.mic()
             tic[i, j] = mine.tic(norm=True)
